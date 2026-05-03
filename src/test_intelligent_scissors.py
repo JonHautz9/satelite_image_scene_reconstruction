@@ -1,7 +1,7 @@
 # from scissors.feature_extraction import Scissors
 from PIL import Image
 import numpy as np
-from scissors.gui import run_demo
+from scissors.gui import get_segment_path
 import os
 from scissors.feature_extraction import Scissors
 from shapely.geometry import Point, Polygon
@@ -40,14 +40,15 @@ def rgb_save(im_file):
     img = Image.open(im_file).convert("RGB")
     img.save(os.path.join(os.path.dirname(__file__), image_directory, "rgb_" + input_image))
 
-def demo():    
+def get_segment_points():    
     if not os.path.exists(input_image_path):
         print(f"Error: File '{input_image_path}' not found in {os.getcwd()}")
     else:
-        run_demo(input_image_path)
+        path = get_segment_path(input_image_path)
+        print(f"paths: {path}")
 
 def main():
-    demo()
+    get_segment_points()
     # rgb_save(input_image_path)
 
 if __name__ == "__main__":
