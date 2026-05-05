@@ -138,6 +138,33 @@ def save(mask, height_map, image_path):
     if height_map is not None:
         np.save(f"{s}_height_map.npy", height_map)
 
+
+def run(image_path, refs=None):
+    if refs == None:
+        refs = []
+
+    out = f"{Path(image_path).stem}_height_result.png"
+    depth_normalized = get_depth(image_path)
+    mask, thresh = get_mask(depth_normalized)
+    height_map = build_height_map(depth_normalized, refs)
+    show_result(image_path, depth_normalized, mask, thresh, height_map, refs, False, out)
+    save(mask, height_map, image_path)
+
+
+def select_points(image_path):                                                                                                                                                                                                                                                                      
+    img = Image.open(image_path).convert("RGB")                                                                                                                                                                                                                                                     
+    fig, ax = plt.subplots(figsize=(10, 8))                                                                                                                                                                                                                                                         
+    ax.imshow(img)                                                                                                                                                                                                                                                                                
+    ax.set_title("Left click to select, right click to undo, enter when done.")
+    ax.axis("off")
+    plt.tight_layout()
+
+    points = plt.ginput(n=-1, timeout=0)
+    plt.close(fig)
+
+    return [[int(x), int(y), None] for x, y in points]
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("image")
