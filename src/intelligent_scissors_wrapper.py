@@ -69,7 +69,7 @@ def rgb_save(im_file_path, input_image_fn):
     img = Image.open(im_file_path).convert("RGB")
     img.save(os.path.join(os.path.dirname(__file__), INPUT_IMAGE_DIRECTORY, "rgb_" + input_image_fn))
 
-def get_segment(input_image_path):    
+def get_segment(input_image_path):
     if not os.path.exists(input_image_path):
         print(f"Error: File '{input_image_path}' not found in {os.getcwd()}")
     else:
@@ -77,7 +77,7 @@ def get_segment(input_image_path):
     return path
 
 def main():
-    input_image = 'rgb_rushmore.png'
+    input_image = 'rgb_StatefarmCenterSatellite.png'
     input_image_path = os.path.join(os.path.dirname(__file__), INPUT_IMAGE_DIRECTORY, input_image)
     # rgb_save(input_image_path, input_image)
 
