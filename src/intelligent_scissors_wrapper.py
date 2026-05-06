@@ -26,6 +26,10 @@ def get_inside_mask(segment_path, im):
         first, last = get_first_last_one_index(row)
         if first != None and last != None:
             row[first:last] = 1
+    segment_path_arr = np.sort(segment_path_arr, axis=1)
+    # sorted_segment_path = np.sort(segment_path_arr, axis=0)
+    # remove_outside_path(mask, sorted_segment_path)
+    # remove_outside_path(mask.T, np.flip(sorted_segment_path))
     return mask
 
 def get_first_last_one_index(arr):
@@ -45,6 +49,20 @@ def get_first_last_one_index(arr):
         lowest_index = indices[0]      # First occurrence
         highest_index = indices[-1]    # Last occurrence
     return (lowest_index, highest_index)
+
+def remove_outside_path(mask, sorted_segment_path):
+    segment_lines = []
+    prev_row = -1
+    for t in sorted_segment_path:
+        if t[0] == prev_row:
+            continue
+        segment_line = [(t, p) for p in sorted_segment_path if p[0] == t[0] and not np.array_equal(p, t)]
+        if segment_line and len(segment_line) > 1:
+            segment_lines.append(segment_line[-1])
+        prev_row = t[0]
+    for l in segment_lines:
+        mask[l[0][0]][:l[0][0]] = 0 # set row up to segment line to 0
+        mask[l[0][0]][l[1][1]:] = 0 # set row after segment line to 0
 
 # Use this to save new file so it can be read by intelligent scissors
 def rgb_save(im_file_path, input_image_fn):
