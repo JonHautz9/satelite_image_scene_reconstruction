@@ -26,7 +26,7 @@ def get_inside_mask(segment_path, im):
         first, last = get_first_last_one_index(row)
         if first != None and last != None:
             row[first:last] = 1
-    segment_path_arr = np.sort(segment_path_arr, axis=1)
+    # segment_path_arr = np.sort(segment_path_arr, axis=1)
     # sorted_segment_path = np.sort(segment_path_arr, axis=0)
     # remove_outside_path(mask, sorted_segment_path)
     # remove_outside_path(mask.T, np.flip(sorted_segment_path))
@@ -69,21 +69,25 @@ def rgb_save(im_file_path, input_image_fn):
     img = Image.open(im_file_path).convert("RGB")
     img.save(os.path.join(os.path.dirname(__file__), INPUT_IMAGE_DIRECTORY, "rgb_" + input_image_fn))
 
-def get_segment(input_image_path):
+def get_segments(input_image_path):
+    segment_paths = []
     if not os.path.exists(input_image_path):
         print(f"Error: File '{input_image_path}' not found in {os.getcwd()}")
     else:
-        path = get_segment_path(input_image_path)
-    return path
+        segment_paths = get_segment_path(input_image_path)
+    return segment_paths
 
 def main():
     input_image = 'rgb_StatefarmCenterSatellite.png'
     input_image_path = os.path.join(os.path.dirname(__file__), INPUT_IMAGE_DIRECTORY, input_image)
     # rgb_save(input_image_path, input_image)
 
-    segment_path = get_segment(input_image_path)
+    segment_paths = get_segments(input_image_path)
     im = cv2.imread(input_image_path)
-    inside_mask = get_inside_mask(segment_path, im)
+    inside_masks = []
+    for segment_path in segment_paths:
+        inside_masks.append(get_inside_mask(segment_path, im))
+    inside_mask = np.sum(inside_masks, axis=0)
     plt.imshow(inside_mask)
     plt.show()
     save_ready_mask = (inside_mask * 255).astype(np.uint8)
