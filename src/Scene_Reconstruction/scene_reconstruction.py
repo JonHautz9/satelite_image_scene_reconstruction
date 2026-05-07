@@ -1,8 +1,8 @@
-import numpy as np
-import matplotlib.pyplot as plt
 import cv2
+import matplotlib.pyplot as plt
+import numpy as np
 from scipy import ndimage
-from skimage.morphology import remove_small_objects, binary_closing, disk
+from skimage.morphology import binary_closing, disk, remove_small_objects
 
 def ensure_2d(array, name="array"):
     arr = np.asarray(array)
@@ -12,19 +12,16 @@ def ensure_2d(array, name="array"):
         raise ValueError(f"{name} must be 2D or 3D, got shape {arr.shape}.")
     return arr
 
-def normalize_depth_input(arr, convention="closer_higher", invert=False,
-                          clip_percentiles=(1, 99)):
+def normalize_depth_input(arr, convention="closer_higher", invert=False, clip_percentiles=(1, 99)):
     """
-    Normalize an arbitrary depth/disparity map into a 0 to 1 'higher = closer'
-    height map for the rest of the pipeline.
+    Normalize an arbitrary depth/disparity map into a 0-1 height map used by the
+    rest of the pipeline.
 
     convention:
-      'closer_higher' — bigger value already means closer (e.g. disparity, MiDaS)
-      'closer_lower'  — bigger value means farther (e.g. metric depth in meters)
-    invert: force-flip after the convention rule
-    clip_percentiles: robust min/max to ignore outliers
+      closer_higher -> larger values already mean closer / higher
+      closer_lower  -> larger values mean farther, so flip after normalization
     """
-    a = ensure_2d(arr).astype(float)
+    a = ensure_2d(arr, name="depth_input").astype(float)
     a[~np.isfinite(a)] = np.nan
 
     lo, hi = np.nanpercentile(a, clip_percentiles)
@@ -33,6 +30,9 @@ def normalize_depth_input(arr, convention="closer_higher", invert=False,
 
     if convention == "closer_lower":
         a = 1.0 - a
+    elif convention != "closer_higher":
+        raise ValueError("convention must be 'closer_higher' or 'closer_lower'.")
+
     if invert:
         a = 1.0 - a
 
@@ -63,27 +63,38 @@ def prepare_height_map(height_map, smooth=False, sigma=1.0):
 
     return hm
 
+def prepare_generic_inputs(raw_height_map,
+                           rgb_image=None,
+                           convention="closer_higher",
+                           invert=False,
+                           clip_percentiles=(1, 99),
+                           smooth=False,
+                           sigma=1.0):
+    """
+    Generic preprocessing entry point for arbitrary depth/disparity inputs.
+    """
+    hm = normalize_depth_input(
+        raw_height_map,
+        convention=convention,
+        invert=invert,
+        clip_percentiles=clip_percentiles,
+    )
+    hm = prepare_height_map(hm, smooth=smooth, sigma=sigma)
 
-# object extraction
+    rgb = None
+    if rgb_image is not None:
+        rgb = align_rgb_to_height(rgb_image, hm)
+
+    return hm, rgb
+
+# Object extraction
 
 def label_connected_regions(binary_mask):
-    # Label connected components in a binary mask.
     labeled, num_objects = ndimage.label(binary_mask)
     return labeled, num_objects
 
 
-
 def extract_objects_from_mask(binary_mask, min_size=30):
-    """
-    Extract connected objects from a binary mask.
-
-    Returns
-    -------
-    labeled_mask : np.ndarray
-        Integer-labeled image.
-    object_data : list of dict
-        Each dict contains object ID, mask, bbox, centroid, and pixel count.
-    """
     labeled_mask, num_objects = label_connected_regions(binary_mask)
     object_data = []
 
@@ -118,7 +129,6 @@ def extract_objects_from_mask(binary_mask, min_size=30):
             "num_pixels": num_pixels,
         })
 
-    # Re-label so IDs match filtered object_data in order
     filtered_labeled = np.zeros_like(labeled_mask)
     relabeled_objects = []
 
@@ -130,24 +140,7 @@ def extract_objects_from_mask(binary_mask, min_size=30):
     return filtered_labeled, relabeled_objects
 
 
-
 def assign_heights_to_objects(object_data, height_map, method="avg"):
-    """
-    Assign a representative height to each extracted object.
-
-    Parameters
-    ----------
-    object_data : list of dict
-        Objects with pixel masks.
-    height_map : np.ndarray
-        2D height map.
-    method : str
-        'avg', 'max', or 'median'.
-
-    Returns
-    object_data : list of dict
-        Updated objects with assigned height values.
-    """
     hm = prepare_height_map(height_map)
 
     for obj in object_data:
@@ -170,9 +163,7 @@ def assign_heights_to_objects(object_data, height_map, method="avg"):
     return object_data
 
 
-
 def objects_to_height_map(image_shape, object_data):
-    # Convert object footprints and assigned heights into a 2D object-height map.
     H, W = image_shape[:2]
     object_height_map = np.zeros((H, W), dtype=float)
 
@@ -185,9 +176,6 @@ def objects_to_height_map(image_shape, object_data):
 # Reconstruction modes
 
 def reconstruct_from_roof_mask(roof_mask, default_height=10.0, min_size=30, roof_threshold=0.5):
-    # Simple reconstruction using only the roof mask.
-    # Every connected roof object is assigned the same default height.
-    # This is useful when the height map is unavailable or unreliable.
     roof_binary = prepare_binary_mask(
         roof_mask,
         threshold=roof_threshold,
@@ -209,12 +197,7 @@ def reconstruct_from_roof_mask(roof_mask, default_height=10.0, min_size=30, roof
     }
 
 
-
 def reconstruct_from_height_map(height_map, min_size=30, height_threshold=None, threshold_percentile=75):
-    # Simple reconstruction using only the height map.
-    # Elevated regions are detected by thresholding the height map. A threshold can
-    # be provided directly, or estimated from a percentile of the nonzero heights.
-
     hm = prepare_height_map(height_map)
 
     nonzero = hm[hm > 0]
@@ -240,6 +223,7 @@ def reconstruct_from_height_map(height_map, min_size=30, height_threshold=None, 
         "height_threshold": float(height_threshold),
     }
 
+
 def reconstruct_terrain_from_height_map(height_map,
                                         min_height=0.0,
                                         smooth=False,
@@ -247,32 +231,42 @@ def reconstruct_terrain_from_height_map(height_map,
                                         sample_step=8,
                                         smooth_method="gaussian",
                                         use_otsu=False):
+    """
+    Terrain reconstruction that preserves local surface variation.
+    """
     hm = prepare_height_map(height_map)
 
     if smooth:
         if smooth_method == "gaussian":
             hm = ndimage.gaussian_filter(hm, sigma=sigma)
         elif smooth_method == "median":
-            # edge-preserving poor-man's bilateral; size ~ 2*sigma+1
             size = max(3, int(2 * sigma + 1))
             hm = ndimage.median_filter(hm, size=size)
         else:
             raise ValueError("smooth_method must be 'gaussian' or 'median'.")
 
     if use_otsu:
-        from skimage.filters import threshold_otsu
-        nonzero = hm[hm > 0]
-        if nonzero.size:
-            min_height = float(threshold_otsu(nonzero))
+        try:
+            from skimage.filters import threshold_otsu
+            nonzero = hm[hm > 0]
+            if nonzero.size:
+                min_height = float(threshold_otsu(nonzero))
+        except Exception:
+            pass
 
     terrain_mask = hm > min_height
 
     H, W = hm.shape
     rs, cs = np.mgrid[0:H:sample_step, 0:W:sample_step]
     sampled = terrain_mask[rs, cs]
-    rs, cs = rs[sampled], cs[sampled]
+    rs = rs[sampled]
+    cs = cs[sampled]
     zs = hm[rs, cs]
-    point_cloud = np.column_stack([cs, rs, zs]).astype(float) if rs.size else np.zeros((0, 3))
+
+    if rs.size:
+        point_cloud = np.column_stack([cs, rs, zs]).astype(float)
+    else:
+        point_cloud = np.zeros((0, 3), dtype=float)
 
     return {
         "mode": "terrain",
@@ -283,25 +277,23 @@ def reconstruct_terrain_from_height_map(height_map,
         "point_cloud": point_cloud,
     }
 
+
 def reconstruct_combined(height_map, roof_mask, vertical_mask=None,
                          min_size=30, roof_threshold=0.5,
                          height_method="avg", use_vertical_refinement=False):
-    """
-    Combined reconstruction using both roof mask and height map.
-
-    The roof mask defines the object footprints.
-    The height map provides the representative height for each object.
-    The vertical mask can optionally be used as a weak refinement cue.
-    """
     hm = prepare_height_map(height_map)
-    roof_binary = prepare_binary_mask(roof_mask, threshold=roof_threshold,
-                                      min_size=min_size)
+    roof_binary = prepare_binary_mask(
+        roof_mask,
+        threshold=roof_threshold,
+        min_size=min_size
+    )
 
     if use_vertical_refinement and vertical_mask is not None:
-        vm = prepare_binary_mask(vertical_mask, threshold=roof_threshold,
-                                 min_size=min_size)
-        # Weak refinement: union roof and vertical regions, but keep roof as the
-        # main footprint definition. This can help in natural scenes or noisy masks.
+        vm = prepare_binary_mask(
+            vertical_mask,
+            threshold=roof_threshold,
+            min_size=min_size
+        )
         roof_binary = np.logical_or(roof_binary, vm)
         roof_binary = remove_small_objects(roof_binary, min_size=min_size)
 
@@ -318,22 +310,20 @@ def reconstruct_combined(height_map, roof_mask, vertical_mask=None,
     }
 
 
-# 3D Visualization
+# 3D visualization helpers
 
 def build_voxel_scene(object_height_map, height_scale=1.0):
     if height_scale <= 0:
         raise ValueError("height_scale must be positive.")
-    height_map = np.asarray(object_height_map, dtype=float)
-    scaled = np.maximum(0, np.round(height_map / height_scale).astype(int))
+
+    hm = np.asarray(object_height_map, dtype=float)
+    scaled = np.maximum(0, np.round(hm / height_scale).astype(int))
     Z = int(scaled.max()) + 1 if scaled.size else 1
-    # broadcast: voxel (r,c,z) is True iff z < scaled[r,c]
-    return np.arange(Z)[None, None, :] < scaled[:, :, None]
+    voxels = np.arange(Z)[None, None, :] < scaled[:, :, None]
+    return voxels
+
 
 def build_point_cloud(object_height_map, sample_step=1):
-    # Convert the object-height map into a simple point cloud.
-    # Each nonzero pixel becomes one 3D point: (x, y, z).
-    # This is lighter than a voxel grid and useful for quick visualization.
-
     hm = np.asarray(object_height_map, dtype=float)
     points = []
 
@@ -350,15 +340,7 @@ def build_point_cloud(object_height_map, sample_step=1):
     return np.array(points, dtype=float)
 
 
-# User-Selected Height Queries
-
 def get_object_heights_from_clicks(selected_points, labeled_objects, object_data):
-    """
-    Given user-selected (x, y) points, return the height of the object clicked.
-
-    This is more stable than reading the value from a single pixel, because the
-    height returned is the representative height of the full connected object.
-    """
     object_lookup = {obj["id"]: obj for obj in object_data}
     H, W = labeled_objects.shape
     heights = []
@@ -376,11 +358,82 @@ def get_object_heights_from_clicks(selected_points, labeled_objects, object_data
 
     return heights
 
+# Texture / RGB Decoration 
+
+def load_rgb_image(path, target_shape=None):
+    """Load RGB and optionally resize to match a (H, W) target."""
+    img = cv2.imread(path)
+    if img is None:
+        raise FileNotFoundError(f"Could not read image: {path}")
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    if target_shape is not None:
+        H, W = target_shape[:2]
+        if img.shape[:2] != (H, W):
+            img = cv2.resize(img, (W, H), interpolation=cv2.INTER_AREA)
+    return img
+
+
+def align_rgb_to_height(rgb, height_map):
+    """Resize RGB to match height_map's (H, W). No-op if already aligned."""
+    H, W = height_map.shape[:2]
+    if rgb.shape[:2] == (H, W):
+        return rgb
+    return cv2.resize(rgb, (W, H), interpolation=cv2.INTER_AREA)
+
+
+def colorize_point_cloud(point_cloud, rgb_image):
+    """Sample RGB at each point's (x, y) -> (N, 3) uint8 colors.
+
+    point_cloud columns are (x=col, y=row, z=height).
+    """
+    if len(point_cloud) == 0:
+        return np.zeros((0, 3), dtype=np.uint8)
+    H, W = rgb_image.shape[:2]
+    cs = np.clip(point_cloud[:, 0].astype(int), 0, W - 1)
+    rs = np.clip(point_cloud[:, 1].astype(int), 0, H - 1)
+    return rgb_image[rs, cs]
+
+
+def colorize_objects(object_data, rgb_image, method="median"):
+    """Assign each object a representative RGB sampled from its mask."""
+    for obj in object_data:
+        pixels = rgb_image[obj["mask"]]
+        if len(pixels) == 0:
+            obj["color"] = np.array([128, 128, 128], dtype=np.uint8)
+            continue
+
+        if method == "median":
+            obj["color"] = np.median(pixels, axis=0).astype(np.uint8)
+        elif method == "avg":
+            obj["color"] = np.mean(pixels, axis=0).astype(np.uint8)
+        else:
+            raise ValueError("method must be 'median' or 'avg'.")
+
+    return object_data
+
+
+
+def apply_texture(results, rgb_image, height_map=None,
+                  texture_objects=True, texture_point_cloud=True):
+    ref = height_map if height_map is not None else results.get("object_height_map")
+    if ref is None:
+        raise ValueError("A reference height or mask is required to align the RGB image.")
+
+    rgb = align_rgb_to_height(rgb_image, ref)
+
+    if texture_point_cloud and "point_cloud" in results:
+        results["point_cloud_colors"] = colorize_point_cloud(results["point_cloud"], rgb)
+
+    if texture_objects and results.get("object_data"):
+        results["object_data"] = colorize_objects(results["object_data"], rgb)
+
+    results["rgb_image"] = rgb
+    return results
+
 # Visualization
 
 def plot_2d_diagnostics(height_map=None, binary_mask=None, labeled_objects=None,
                         object_height_map=None, title_prefix=""):
-
     items = []
 
     if height_map is not None:
@@ -418,22 +471,7 @@ def plot_voxel_scene(voxels):
     plt.show()
 
 
-# def plot_point_cloud(points):
-#     if len(points) == 0:
-#         print("Point cloud is empty.")
-#         return
-
-#     fig = plt.figure(figsize=(10, 8))
-#     ax = fig.add_subplot(111, projection="3d")
-#     ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=3)
-#     ax.set_xlabel("X")
-#     ax.set_ylabel("Y")
-#     ax.set_zlabel("Z")
-#     ax.set_title("3D Point Cloud Reconstruction")
-#     plt.tight_layout()
-#     plt.show()
-
-def plot_point_cloud(points, z_exaggeration=None, color_by_height=True):
+def plot_point_cloud(points, colors=None, color_by_height=True, z_exaggeration=None, title="3D Point Cloud Reconstruction"):
     if len(points) == 0:
         print("Point cloud is empty.")
         return
@@ -441,27 +479,34 @@ def plot_point_cloud(points, z_exaggeration=None, color_by_height=True):
     fig = plt.figure(figsize=(12, 9))
     ax = fig.add_subplot(111, projection="3d")
 
-    x, y, z = points[:, 0], points[:, 1], points[:, 2]
+    x = points[:, 0]
+    y = points[:, 1]
+    z = points[:, 2]
 
-    if color_by_height:
+    if colors is not None:
+        ax.scatter(x, y, z, c=colors / 255.0, s=3)
+    elif color_by_height:
         sc = ax.scatter(x, y, z, c=z, cmap="terrain", s=3)
         plt.colorbar(sc, ax=ax, shrink=0.6, label="Relative height")
     else:
         ax.scatter(x, y, z, s=3)
 
-    # auto-pick exaggeration so Z is visible relative to XY extent
     x_range = max(np.ptp(x), 1)
     y_range = max(np.ptp(y), 1)
     z_range = max(np.ptp(z), 1e-6)
+
     if z_exaggeration is None:
         z_exaggeration = 0.4 * max(x_range, y_range) / z_range
-    ax.set_box_aspect([x_range, y_range, z_range * z_exaggeration])
-    ax.invert_yaxis()  # image coords: Y grows downward
 
-    ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
-    ax.set_title("3D Point Cloud Reconstruction")
+    ax.set_box_aspect([x_range, y_range, z_range * z_exaggeration])
+    ax.invert_yaxis()
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z")
+    ax.set_title(title)
     plt.tight_layout()
     plt.show()
+
 
 def plot_terrain_surface(height_map, downsample=4, z_exaggeration=None,
                          cmap="terrain", title="Terrain Surface"):
@@ -476,22 +521,71 @@ def plot_terrain_surface(height_map, downsample=4, z_exaggeration=None,
 
     fig = plt.figure(figsize=(13, 9))
     ax = fig.add_subplot(111, projection="3d")
-    surf = ax.plot_surface(X, Y, hm_ds * z_exaggeration,
-                           cmap=cmap, linewidth=0, antialiased=True)
-    ax.set_box_aspect([W * downsample, H * downsample,
-                       z_range * z_exaggeration])
+    surf = ax.plot_surface(
+        X,
+        Y,
+        hm_ds * z_exaggeration,
+        cmap=cmap,
+        linewidth=0,
+        antialiased=True
+    )
+    ax.set_box_aspect([W * downsample, H * downsample, z_range * z_exaggeration])
     ax.invert_yaxis()
-    ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z (exaggerated)")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z (exaggerated)")
     ax.set_title(title)
     plt.colorbar(surf, ax=ax, shrink=0.6, label="Relative height")
     plt.tight_layout()
     plt.show()
+
+
+def plot_textured_surface(height_map, rgb_image, mask=None, downsample=4,
+                          z_exaggeration=None, title="Textured Terrain Surface"):
+    hm = prepare_height_map(height_map)[::downsample, ::downsample].astype(float)
+    rgb = align_rgb_to_height(rgb_image, height_map)[::downsample, ::downsample]
+
+    if mask is not None:
+        m = align_rgb_to_height(mask.astype(np.uint8), height_map)
+        m = m[::downsample, ::downsample].astype(bool)
+        hm = np.where(m, hm, np.nan)
+
+    H, W = hm.shape
+    X, Y = np.meshgrid(np.arange(W) * downsample, np.arange(H) * downsample)
+
+    z_range = max(np.nanmax(hm) - np.nanmin(hm), 1e-6)
+    if z_exaggeration is None:
+        z_exaggeration = 0.4 * max(W * downsample, H * downsample) / z_range
+
+    facecolors = rgb.astype(float) / 255.0
+
+    fig = plt.figure(figsize=(13, 9))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot_surface(
+        X,
+        Y,
+        hm * z_exaggeration,
+        facecolors=facecolors,
+        linewidth=0,
+        antialiased=False,
+        shade=False
+    )
+    ax.set_box_aspect([W * downsample, H * downsample, z_range * z_exaggeration])
+    ax.invert_yaxis()
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z (exaggerated)")
+    ax.set_title(title)
+    plt.tight_layout()
+    plt.show()
+
 
 # Reconstruction Scene Function
 
 def reconstruct_scene(height_map=None,
                       roof_mask=None,
                       vertical_mask=None,
+                      rgb_image=None,
                       mode="combined",
                       min_size=30,
                       roof_threshold=0.5,
@@ -502,9 +596,15 @@ def reconstruct_scene(height_map=None,
                       use_vertical_refinement=False,
                       build_representation="voxels",
                       height_scale=1.0,
+                      point_cloud_sample_step=1,
                       terrain_sample_step=8,
                       terrain_smooth=False,
                       terrain_sigma=1.0,
+                      terrain_smooth_method="gaussian",
+                      terrain_use_otsu=False,
+                      apply_rgb_texture=False,
+                      texture_objects=True,
+                      texture_point_cloud=True,
                       plot_results=True):
     """
     Master reconstruction function.
@@ -557,6 +657,8 @@ def reconstruct_scene(height_map=None,
             smooth=terrain_smooth,
             sigma=terrain_sigma,
             sample_step=terrain_sample_step,
+            smooth_method=terrain_smooth_method,
+            use_otsu=terrain_use_otsu,
         )
 
     else:
@@ -569,7 +671,21 @@ def reconstruct_scene(height_map=None,
 
     if build_representation in ("point_cloud", "both"):
         if "point_cloud" not in results:
-            results["point_cloud"] = build_point_cloud(object_height_map)
+            results["point_cloud"] = build_point_cloud(
+                object_height_map,
+                sample_step=point_cloud_sample_step
+            )
+
+    if apply_rgb_texture:
+        if rgb_image is None:
+            raise ValueError("apply_rgb_texture=True requires rgb_image.")
+        results = apply_texture(
+            results,
+            rgb_image=rgb_image,
+            height_map=height_map,
+            texture_objects=texture_objects,
+            texture_point_cloud=texture_point_cloud,
+        )
 
     if plot_results:
         plot_2d_diagnostics(
@@ -583,31 +699,37 @@ def reconstruct_scene(height_map=None,
         if build_representation == "voxels":
             plot_voxel_scene(results["voxels"])
         elif build_representation == "point_cloud":
-            plot_point_cloud(results["point_cloud"])
+            plot_point_cloud(
+                results["point_cloud"],
+                colors=results.get("point_cloud_colors")
+            )
         elif build_representation == "both":
             plot_voxel_scene(results["voxels"])
-            plot_point_cloud(results["point_cloud"])
+            plot_point_cloud(
+                results["point_cloud"],
+                colors=results.get("point_cloud_colors")
+            )
 
     return results
 
-
 if __name__ == "__main__":
-    raw = np.load("mtRushmore_depth_norm.npy")
+    raw = np.load("inputs/mtRushmore_depth_norm.npy")
     height_map = normalize_depth_input(raw, convention="closer_higher")
+
+    rgb = load_rgb_image("inputs/rgb_rushmore.png", target_shape=height_map.shape)
 
     results = reconstruct_scene(
         height_map=height_map,
+        rgb_image=rgb,
         mode="terrain",
         height_threshold=0.0,
         terrain_sample_step=6,
         terrain_smooth=True,
         terrain_sigma=1.5,
         build_representation="point_cloud",
-        plot_results=True, 
+        apply_rgb_texture=True,
+        plot_results=True,
     )
-
-    # plot_terrain_surface(height_map, downsample=4, title="Mt. Rushmore — terrain surface")
-    # plot_point_cloud(results["point_cloud"])
 
     print("Height map shape:", height_map.shape)
     print("Height range:", float(height_map.min()), "→", float(height_map.max()))
