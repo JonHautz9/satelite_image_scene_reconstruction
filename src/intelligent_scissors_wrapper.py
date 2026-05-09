@@ -1,4 +1,3 @@
-# from scissors.feature_extraction import Scissors
 from PIL import Image
 import cv2
 import numpy as np
@@ -6,8 +5,10 @@ from scissors.gui import get_segment_path
 import os
 from skimage.draw import polygon2mask
 import matplotlib.pyplot as plt
+import argparse
 
 INPUT_IMAGE_DIRECTORY = "input_images"
+MASKS_DIRECTORY = "masks"
 
 def get_inside_mask(segment_path, im):   
     segment_path_arr = np.flip(np.array(segment_path))
@@ -26,10 +27,6 @@ def get_inside_mask(segment_path, im):
         first, last = get_first_last_one_index(row)
         if first != None and last != None:
             row[first:last] = 1
-    # segment_path_arr = np.sort(segment_path_arr, axis=1)
-    # sorted_segment_path = np.sort(segment_path_arr, axis=0)
-    # remove_outside_path(mask, sorted_segment_path)
-    # remove_outside_path(mask.T, np.flip(sorted_segment_path))
     return mask
 
 def get_first_last_one_index(arr):
@@ -67,7 +64,9 @@ def remove_outside_path(mask, sorted_segment_path):
 # Use this to save new file so it can be read by intelligent scissors
 def rgb_save(im_file_path, input_image_fn):
     img = Image.open(im_file_path).convert("RGB")
-    img.save(os.path.join(os.path.dirname(__file__), INPUT_IMAGE_DIRECTORY, "rgb_" + input_image_fn))
+    save_path = os.path.join(os.path.dirname(__file__), INPUT_IMAGE_DIRECTORY, "rgb_" + input_image_fn)
+    img.save(save_path)
+    print(f"Saved RGB image to: {save_path}")
 
 def get_segments(input_image_path):
     segment_paths = []
@@ -77,23 +76,32 @@ def get_segments(input_image_path):
         segment_paths = get_segment_path(input_image_path)
     return segment_paths
 
-def main():
-    input_image = 'rgb_bellTowerSatellite.png'
-    input_image_path = os.path.join(os.path.dirname(__file__), INPUT_IMAGE_DIRECTORY, input_image)
-    # rgb_save(input_image_path, input_image)
-
+def generate_segment_mask(input_image_path, input_image_fn):
     segment_paths = get_segments(input_image_path)
     im = cv2.imread(input_image_path)
     inside_masks = []
     for segment_path in segment_paths:
         inside_masks.append(get_inside_mask(segment_path, im))
     inside_mask = np.sum(inside_masks, axis=0)
+    save_ready_mask = (inside_mask * 255).astype(np.uint8)
+    save_path = os.path.join(os.path.dirname(__file__), MASKS_DIRECTORY, "mask_" + input_image_fn)
+    cv2.imwrite(save_path, save_ready_mask)
+    print(f"Saved segment mask image to: {save_path}")
     plt.imshow(inside_mask)
     plt.show()
-    save_ready_mask = (inside_mask * 255).astype(np.uint8)
 
-    print(f"inside_mask type: {type(inside_mask)}")
-    cv2.imwrite(os.path.join(os.path.dirname(__file__), "mask_" + input_image), save_ready_mask)
+def main():
+    parser = argparse.ArgumentParser(description="Create segments of an image to generate a mask of.")
+    parser.add_argument("image_path", help="The path to the image file")
+    parser.add_argument("--alpha", action="store_true", help="Include this flag to save the output")
+    args = parser.parse_args()
+    input_image_path = args.image_path
+    input_image_fn = os.path.basename(input_image_path)
+    if args.alpha:
+        rgb_save(input_image_path, input_image_fn)
+    else:
+        generate_segment_mask(input_image_path, input_image_fn)
+    
    
 
 if __name__ == "__main__":
