@@ -1,4 +1,4 @@
-# Satelite Image Scene Reconstruction
+# Satellite Image Scene Reconstruction
 
 ## Environment Setup
 ### You will need to use an environment with Python < 3.12
@@ -10,15 +10,21 @@ pip install -r requirements.txt
 ### Use this if pip install fails to because it can't find a Cython module
 ```
 set PYTHONUTF8=1 # For UnicodeDecodeError on Windows
-pip install intelligent-scissors --no-binary :all: --no-build-isolation
+pip install -r requirements.txt --no-build-isolation
 ```
 
+### Use this link if you get the following error and download the tools:
+error: Microsoft Visual C++ 14.0 or greater is required. Get it with "Microsoft C++ Build Tools": https://visualstudio.microsoft.com/visual-cpp-build-tools/
+
+
 ### Install Forked Version of Intelligent Scissors
+#### Clone the Intelligent Scissors repo
+https://github.com/JonHautz9/Intelligent-Scissors#
 #### How to Build the wheel
 ##### Install Build Tools
 Install `wheel` and `setuptools` in your environment. 
 ```
-install wheel setuptools
+pip install wheel setuptools
 ```
 ##### Build the Wheel 
 Run the following command in the root project directory to create the `dist/` folder containing the `.whl` file.

@@ -78,7 +78,7 @@ def get_segments(input_image_path):
     return segment_paths
 
 def main():
-    input_image = 'rgb_StatefarmCenterSatellite.png'
+    input_image = 'rgb_bellTowerSatellite.png'
     input_image_path = os.path.join(os.path.dirname(__file__), INPUT_IMAGE_DIRECTORY, input_image)
     # rgb_save(input_image_path, input_image)
 
