@@ -12,7 +12,7 @@ import cv2
 
 # loads depth map from cache or runs the model using Depth Anything V2 from huggingface
 def get_depth(image_path):
-    cache = f"{Path(image_path).stem}_depth_norm.npy"
+    cache = os.path.join(os.path.dirname(__file__), "output",Path(image_path).stem+"_depth_norm.npy")
     if os.path.exists(cache):
         return np.load(cache).astype(np.float32)
 
@@ -28,7 +28,7 @@ def get_depth(image_path):
 
     depth_normalized = (depth-depth.min()) / (depth.max()-depth.min()+1e-10)
 
-    np.save(cache, depth_normalized)
+    np.save(os.path.join(os.path.dirname(__file__), "output",Path(image_path).stem+"_depth_norm.npy"), depth_normalized)
     return depth_normalized
 
 
@@ -134,16 +134,17 @@ def show_result(image_path, depth_normalized, mask, thresh, height_map, refs, in
 
 def save(mask, height_map, image_path):
     s = Path(image_path).stem
-    np.save(f"{s}_mask.npy", mask)
+    # np.save(f"/heatmap/output/{s}_mask.npy", mask)
     if height_map is not None:
-        np.save(f"{s}_height_map.npy", height_map)
+        np.save(os.path.join(os.path.dirname(__file__), "output",s+"_height_map.npy"), height_map)
 
 
 def run(image_path, refs=None):
     if refs == None:
         refs = []
-
-    out = f"{Path(image_path).stem}_height_result.png"
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), "output")):
+        os.makedirs(os.path.join(os.path.dirname(__file__), "output"))
+    out = os.path.join(os.path.dirname(__file__), "output",Path(image_path).stem+"_height_result.png")
     depth_normalized = get_depth(image_path)
     mask, thresh = get_mask(depth_normalized)
     height_map = build_height_map(depth_normalized, refs)
@@ -175,8 +176,9 @@ if __name__ == "__main__":
 
     refs = [(int(x), int(y), h) for x, y, h in args.ref]
     s = Path(args.image).stem
-    out = f"{s}_height_result.png"
-
+    if not os.path.exists(os.path.join(os.path.dirname(__file__), "output")):
+        os.makedirs(os.path.join(os.path.dirname(__file__), "output"))
+    out = os.path.join(os.path.dirname(__file__), "output",s+"_height_result.png")
     if refs:
         for x, y, h in refs:
             print(f"  ref: ({x}, {y}) = {h}ft\n")
