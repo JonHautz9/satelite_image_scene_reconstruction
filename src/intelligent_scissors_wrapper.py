@@ -84,9 +84,10 @@ def generate_segment_mask(input_image_path, input_image_fn):
         inside_masks.append(get_inside_mask(segment_path, im))
     inside_mask = np.sum(inside_masks, axis=0)
     save_ready_mask = (inside_mask * 255).astype(np.uint8)
-    save_path = os.path.join(os.path.dirname(__file__), MASKS_DIRECTORY, "mask_" + input_image_fn)
-    cv2.imwrite(save_path, save_ready_mask)
-    print(f"Saved segment mask image to: {save_path}")
+    save_path = os.path.join(os.path.dirname(__file__), MASKS_DIRECTORY, "mask_" + os.path.splitext(input_image_fn)[0])
+    np.save(f"{save_path}.npy", save_ready_mask)
+    print(f"Saved segment mask image to: {save_path}.npy")
+
     plt.imshow(inside_mask)
     plt.show()
 
