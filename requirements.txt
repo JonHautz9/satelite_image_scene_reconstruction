@@ -1,11 +1,12 @@
-ipython==8.12.3
+cython
 ipython==9.13.0
 matplotlib==3.8.4
 numpy==1.23.5
 opencv_contrib_python==4.8.0.74
 opencv_python==4.8.0.74
 Pillow==12.2.0
-scipy==1.17.1
-skimage==0.0
+scipy
+scikit-image
 torch==2.11.0
 transformers==5.8.0
+ipykernel
