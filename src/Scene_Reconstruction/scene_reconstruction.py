@@ -1,4 +1,5 @@
 import cv2
+import os
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import ndimage
@@ -309,6 +310,34 @@ def reconstruct_combined(height_map, roof_mask, vertical_mask=None,
         "object_height_map": object_height_map,
     }
 
+def reconstruct_combined_surface(height_map, roof_mask, vertical_mask=None,
+                                 min_size=30, roof_threshold=0.5,
+                                 use_vertical_refinement=False):
+    hm = prepare_height_map(height_map)
+    roof_binary = prepare_binary_mask(
+        roof_mask,
+        threshold=roof_threshold,
+        min_size=min_size
+    )
+
+    if use_vertical_refinement and vertical_mask is not None:
+        vm = prepare_binary_mask(
+            vertical_mask,
+            threshold=roof_threshold,
+            min_size=min_size
+        )
+        roof_binary = np.logical_or(roof_binary, vm)
+        roof_binary = remove_small_objects(roof_binary, min_size=min_size)
+
+    masked_height_map = hm * roof_binary
+
+    return {
+        "mode": "combined_surface",
+        "binary_mask": roof_binary,
+        "labeled_objects": None,
+        "object_data": [],
+        "object_height_map": masked_height_map,
+    }
 
 # 3D visualization helpers
 
@@ -433,7 +462,8 @@ def apply_texture(results, rgb_image, height_map=None,
 # Visualization
 
 def plot_2d_diagnostics(height_map=None, binary_mask=None, labeled_objects=None,
-                        object_height_map=None, title_prefix=""):
+                        object_height_map=None, title_prefix="",
+                        save_path=None, show=True):
     items = []
 
     if height_map is not None:
@@ -456,22 +486,29 @@ def plot_2d_diagnostics(height_map=None, binary_mask=None, labeled_objects=None,
         ax.axis("off")
 
     plt.tight_layout()
-    plt.show()
+    save_figure(fig, save_path=save_path, show=show)
 
 
-def plot_voxel_scene(voxels):
+def plot_voxel_scene(voxels, face_colors=None):
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection="3d")
-    ax.voxels(voxels, edgecolor="k")
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_zlabel("Z")
+    if face_colors is not None:
+        ax.voxels(voxels, facecolors=face_colors, edgecolor="k")
+    else:
+        ax.voxels(voxels, edgecolor="k")
+    ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
     ax.set_title("3D Voxel Reconstruction")
     plt.tight_layout()
     plt.show()
 
 
-def plot_point_cloud(points, colors=None, color_by_height=True, z_exaggeration=None, title="3D Point Cloud Reconstruction"):
+def plot_point_cloud(points, colors=None, color_by_height=True,
+                     z_exaggeration=300,
+                     point_size=8,
+                     alpha=0.95,
+                     title="3D Point Cloud Reconstruction",
+                     save_path=None,
+                     show=True):
     if len(points) == 0:
         print("Point cloud is empty.")
         return
@@ -481,31 +518,47 @@ def plot_point_cloud(points, colors=None, color_by_height=True, z_exaggeration=N
 
     x = points[:, 0]
     y = points[:, 1]
-    z = points[:, 2]
+    z = points[:, 2] * z_exaggeration
 
     if colors is not None:
-        ax.scatter(x, y, z, c=colors / 255.0, s=3)
+        ax.scatter(
+            x, y, z,
+            c=colors / 255.0,
+            s=point_size,
+            alpha=alpha,
+            linewidths=0
+        )
     elif color_by_height:
-        sc = ax.scatter(x, y, z, c=z, cmap="terrain", s=3)
+        sc = ax.scatter(
+            x, y, z,
+            c=z,
+            cmap="terrain",
+            s=point_size,
+            alpha=alpha,
+            linewidths=0
+        )
         plt.colorbar(sc, ax=ax, shrink=0.6, label="Relative height")
     else:
-        ax.scatter(x, y, z, s=3)
+        ax.scatter(
+            x, y, z,
+            s=point_size,
+            alpha=alpha,
+            linewidths=0
+        )
 
     x_range = max(np.ptp(x), 1)
     y_range = max(np.ptp(y), 1)
     z_range = max(np.ptp(z), 1e-6)
 
-    if z_exaggeration is None:
-        z_exaggeration = 0.4 * max(x_range, y_range) / z_range
-
-    ax.set_box_aspect([x_range, y_range, z_range * z_exaggeration])
+    ax.set_box_aspect([x_range, y_range, z_range])
     ax.invert_yaxis()
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
-    ax.set_zlabel("Z")
+    ax.set_zlabel("Z exaggerated")
     ax.set_title(title)
+
     plt.tight_layout()
-    plt.show()
+    save_figure(fig, save_path=save_path, show=show)
 
 
 def plot_terrain_surface(height_map, downsample=4, z_exaggeration=None,
@@ -540,44 +593,83 @@ def plot_terrain_surface(height_map, downsample=4, z_exaggeration=None,
     plt.show()
 
 
-def plot_textured_surface(height_map, rgb_image, mask=None, downsample=4,
-                          z_exaggeration=None, title="Textured Terrain Surface"):
-    hm = prepare_height_map(height_map)[::downsample, ::downsample].astype(float)
-    rgb = align_rgb_to_height(rgb_image, height_map)[::downsample, ::downsample]
+def plot_textured_surface(height_map, rgb_image, mask=None,
+                          downsample=1,
+                          upsample=2,
+                          smooth_sigma=1.2,
+                          texture_blur=0.6,
+                          z_exaggeration=None,
+                          title="Textured Terrain Surface",
+                          elev=40, azim=-60,
+                          save_path=None,
+                        show=True):
 
+    # Prepare inputs
+    hm = prepare_height_map(height_map).astype(float)
+    rgb = align_rgb_to_height(rgb_image, hm)
+
+    # Optional smoothing of geometry
+    if smooth_sigma is not None and smooth_sigma > 0:
+        hm = ndimage.gaussian_filter(hm, sigma=smooth_sigma)
+
+    # Optional mask handling
     if mask is not None:
-        m = align_rgb_to_height(mask.astype(np.uint8), height_map)
-        m = m[::downsample, ::downsample].astype(bool)
-        hm = np.where(m, hm, np.nan)
+        m = align_rgb_to_height(mask.astype(np.uint8), hm).astype(bool)
+        # Instead of cutting harshly at the mask, keep outside near zero
+        hm = np.where(m, hm, 0.0)
+
+    # Optional texture smoothing
+    if texture_blur is not None and texture_blur > 0:
+        rgb = ndimage.gaussian_filter(rgb.astype(float), sigma=(texture_blur, texture_blur, 0))
+        rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+
+    # Upsample for smoother rendering
+    if upsample > 1:
+        H, W = hm.shape
+        new_W = W * upsample
+        new_H = H * upsample
+
+        hm = cv2.resize(hm, (new_W, new_H), interpolation=cv2.INTER_CUBIC)
+        rgb = cv2.resize(rgb, (new_W, new_H), interpolation=cv2.INTER_LINEAR)
+
+    # Downsample for plotting if desired
+    hm = hm[::downsample, ::downsample]
+    rgb = rgb[::downsample, ::downsample]
 
     H, W = hm.shape
-    X, Y = np.meshgrid(np.arange(W) * downsample, np.arange(H) * downsample)
+    X, Y = np.meshgrid(np.arange(W), np.arange(H))
 
-    z_range = max(np.nanmax(hm) - np.nanmin(hm), 1e-6)
+    z_range = max(np.max(hm) - np.min(hm), 1e-6)
     if z_exaggeration is None:
-        z_exaggeration = 0.4 * max(W * downsample, H * downsample) / z_range
+        z_exaggeration = 0.35 * max(W, H) / z_range
 
+    Z = hm * z_exaggeration
     facecolors = rgb.astype(float) / 255.0
 
-    fig = plt.figure(figsize=(13, 9))
+    fig = plt.figure(figsize=(14, 10))
     ax = fig.add_subplot(111, projection="3d")
+
     ax.plot_surface(
-        X,
-        Y,
-        hm * z_exaggeration,
+        X, Y, Z,
         facecolors=facecolors,
+        rstride=1,
+        cstride=1,
         linewidth=0,
-        antialiased=False,
+        antialiased=True,
         shade=False
     )
-    ax.set_box_aspect([W * downsample, H * downsample, z_range * z_exaggeration])
+
+    ax.set_box_aspect([W, H, max(np.ptp(Z), 1)])
     ax.invert_yaxis()
+    ax.view_init(elev=elev, azim=azim)
+
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
-    ax.set_zlabel("Z (exaggerated)")
+    ax.set_zlabel("Z")
     ax.set_title(title)
+
     plt.tight_layout()
-    plt.show()
+    save_figure(fig, save_path=save_path, show=show)
 
 
 # Reconstruction Scene Function
@@ -660,9 +752,21 @@ def reconstruct_scene(height_map=None,
             smooth_method=terrain_smooth_method,
             use_otsu=terrain_use_otsu,
         )
+    
+    elif mode == "combined_surface":
+        if height_map is None or roof_mask is None:
+            raise ValueError("combined_surface mode requires both height_map and roof_mask.")
+        results = reconstruct_combined_surface(
+            height_map=height_map,
+            roof_mask=roof_mask,
+            vertical_mask=vertical_mask,
+            min_size=min_size,
+            roof_threshold=roof_threshold,
+            use_vertical_refinement=use_vertical_refinement,
+        )
 
     else:
-        raise ValueError("mode must be 'combined', 'roof_only', 'height_only', or 'terrain'.")
+        raise ValueError("mode must be 'combined', 'combined_surface', 'roof_only', 'height_only', or 'terrain'.")
 
     object_height_map = results["object_height_map"]
 
@@ -712,25 +816,98 @@ def reconstruct_scene(height_map=None,
 
     return results
 
+def save_figure(fig, save_path=None, dpi=300, show=True):
+    if save_path is not None:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
+        print(f"Saved figure to: {save_path}")
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
 if __name__ == "__main__":
+    output_dir = "outputs"
+    os.makedirs(output_dir, exist_ok=True)
+
     raw = np.load("inputs/mtRushmore_depth_norm.npy")
     height_map = normalize_depth_input(raw, convention="closer_higher")
-
     rgb = load_rgb_image("inputs/rgb_rushmore.png", target_shape=height_map.shape)
+
+    # raw = np.load("inputs/foellingerSatellite_depth_norm.npy")
+    # height_map = normalize_depth_input(raw, convention="closer_higher")
+    # rgb = load_rgb_image("inputs/foellinger_satellite.png", target_shape=height_map.shape)
+
+    # raw = np.load("inputs/bigBenCropped2Satellite_depth_norm.npy")
+    # height_map = normalize_depth_input(raw, convention="closer_higher")
+    # rgb = load_rgb_image("inputs/bigBenCropped2Satellite.png", target_shape=height_map.shape)
+
+    # raw = np.load("inputs/eastMittenButteSatellite_depth_norm.npy")
+    # height_map = normalize_depth_input(raw, convention="closer_higher")
+    # rgb = load_rgb_image("inputs/eastMittenButteSatellite.png", target_shape=height_map.shape)
+
+    # raw = np.load("inputs/gizaZoomedSatellite_depth_norm.npy")
+    # height_map = normalize_depth_input(raw, convention="closer_higher")
+    # rgb = load_rgb_image("inputs/GizaZoomedSatellite.png", target_shape=height_map.shape)
+
+    # raw = np.load("inputs/louvreCroppedSatellite_depth_norm.npy")
+    # height_map = normalize_depth_input(raw, convention="closer_higher")
+    # rgb = load_rgb_image("inputs/louvreCroppedSatellite.png", target_shape=height_map.shape)
+
 
     results = reconstruct_scene(
         height_map=height_map,
         rgb_image=rgb,
         mode="terrain",
-        height_threshold=0.0,
-        terrain_sample_step=6,
         terrain_smooth=True,
-        terrain_sigma=1.5,
+        terrain_smooth_method="gaussian",
+        terrain_sigma=1.0,
+        terrain_sample_step=1,
+        height_threshold=-1e-6,
         build_representation="point_cloud",
         apply_rgb_texture=True,
-        plot_results=True,
+        texture_point_cloud=True,
+        plot_results=False
+    )
+
+    plot_2d_diagnostics(
+        height_map=height_map,
+        binary_mask=results["binary_mask"],
+        object_height_map=results["object_height_map"],
+        title_prefix=" ",
+        save_path=os.path.join(output_dir, "mtRushmore_diagnostics.png"),
+        show=False
+    )
+
+    plot_textured_surface(
+        height_map=results["object_height_map"],
+        rgb_image=rgb,
+        mask=None,
+        downsample=4,
+        upsample=2,
+        smooth_sigma=0.9,
+        texture_blur=0.35,
+        z_exaggeration=220,
+        title="improved textured 3D surface",
+        elev=38,
+        azim=-55,
+        save_path=os.path.join(output_dir, "mtRushmore_textured_surface.png"),
+        show=False
+    )
+
+    plot_point_cloud(
+        results["point_cloud"],
+        colors=results.get("point_cloud_colors"),
+        z_exaggeration=220,
+        point_size=6,
+        alpha=0.95,
+        title="Foellinger — filled textured point cloud",
+        save_path=os.path.join(output_dir, "mtRushmore_textured_point_cloud.png"),
+        show=False
     )
 
     print("Height map shape:", height_map.shape)
-    print("Height range:", float(height_map.min()), "→", float(height_map.max()))
+    print("RGB shape:", rgb.shape)
     print("Point cloud size:", len(results["point_cloud"]))
+    print("Has point cloud colors:", "point_cloud_colors" in results)
