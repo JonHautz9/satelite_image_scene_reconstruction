@@ -566,9 +566,9 @@ def run_reconstruction_pipeline(
                 height_map=height_map,
                 rgb_image=rgb,
                 mask=results_mask_focus["binary_mask"],
-                crop_to_mask=True,        # ← add
-                crop_padding=30,          # ← add
-                mask_erode=2,             # ← add
+                crop_to_mask=True,        
+                crop_padding=30,          
+                mask_erode=2,         
                 downsample=2,
                 upsample=2,
                 smooth_sigma=0.9,
