@@ -67,6 +67,7 @@ def rgb_save(im_file_path, input_image_fn):
     save_path = os.path.join(os.path.dirname(__file__), INPUT_IMAGE_DIRECTORY, "rgb_" + input_image_fn)
     img.save(save_path)
     print(f"Saved RGB image to: {save_path}")
+    return save_path, "rgb_" + input_image_fn
 
 def get_segments(input_image_path):
     segment_paths = []
@@ -99,11 +100,8 @@ def main():
     input_image_path = args.image_path
     input_image_fn = os.path.basename(input_image_path)
     if args.alpha:
-        rgb_save(input_image_path, input_image_fn)
-    else:
-        generate_segment_mask(input_image_path, input_image_fn)
-    
-   
+        input_image_path, input_image_fn = rgb_save(input_image_path, input_image_fn)
+    generate_segment_mask(input_image_path, input_image_fn)
 
 if __name__ == "__main__":
     main()
