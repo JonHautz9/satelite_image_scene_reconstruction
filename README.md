@@ -39,6 +39,8 @@ Once the `.whl` file is generated install using pip
 ```
 pip install dist/intelligent_scissors-0.1.0-py3-none-any.whl
 ```
+#### Run the end to end flow
+Open the `src/satellite_image_scene_reconstruction_consolidated.ipynb` file to be guided through the end to end flow of our project. We have provided the Pyramids of Giza use case in our notebook. You can use other samples in the `input_images` folder if you would like to try out other sample scenes.
 
 ## Known Issues Running the Code
 ### Intelligent Scissors Generic Preprocess Image Error
