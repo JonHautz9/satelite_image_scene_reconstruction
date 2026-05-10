@@ -1,3 +1,16 @@
+# Scene Reconstruction Pipeline
+
+Generates textured 3D reconstructions from a satellite image, a height map,
+and an optional object mask. Produces diagnostic plots, textured surfaces,
+and a textured point cloud, with optional metric scaling via ground
+sampling distance (GSD).
+
+## Files
+- `scene_reconstruction.py` — main pipeline (importable functions + script entry point)
+- `inputs/` — height maps (`.npy`), RGB satellite images (`.png`), masks (`.npy`)
+- `outputs/` — generated diagnostic plots, textured surfaces, and point clouds
+
+## Run
 The `__main__` block runs the East Mitten Butte example by default. Edit the
 `run_reconstruction_pipeline(...)` call at the bottom of the file to switch
 to a different dataset.
