@@ -5,6 +5,7 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import ndimage
+from scipy.ndimage import binary_dilation
 from skimage.morphology import binary_closing, binary_erosion, disk, remove_small_objects
 
 
@@ -35,43 +36,6 @@ def resize_to_shape(array, target_shape, interpolation=cv2.INTER_AREA):
         return array
 
     return cv2.resize(array, (W, H), interpolation=interpolation)
-
-
-def normalize_depth_input(arr,
-                          convention="closer_higher",
-                          invert=False,
-                          clip_percentiles=(1, 99)):
-    """Normalize a raw depth/disparity map into a 0-1 height map.
-
-    Parameters
-    ----------
-    arr : array-like
-        Raw depth or disparity map.
-    convention : str
-        "closer_higher" means larger input values already correspond to larger
-        reconstructed heights. "closer_lower" flips the normalized map.
-    invert : bool
-        Optional extra inversion after the convention is applied.
-    clip_percentiles : tuple
-        Percentiles used to remove extreme outliers before normalization.
-    """
-    a = ensure_2d(arr, name="depth_input").astype(float)
-    a[~np.isfinite(a)] = np.nan
-
-    lo, hi = np.nanpercentile(a, clip_percentiles)
-    a = np.clip(a, lo, hi)
-    a = (a - lo) / max(hi - lo, 1e-12)
-
-    if convention == "closer_lower":
-        a = 1.0 - a
-    elif convention != "closer_higher":
-        raise ValueError("convention must be 'closer_higher' or 'closer_lower'.")
-
-    if invert:
-        a = 1.0 - a
-
-    a[~np.isfinite(a)] = 0.0
-    return a
 
 
 def prepare_height_map(height_map, smooth=False, sigma=1.0, smooth_method="gaussian"):
@@ -152,6 +116,49 @@ def prepare_binary_mask(mask, target_shape=None, threshold=0.5, min_size=30, clo
         binary = remove_small_objects(binary, min_size=min_size)
 
     return binary
+
+
+# GSD calibration utilities
+
+def measure_pixel_length(image_path):
+    """Open an image and let the user click two points; return pixel distance.
+
+    Use this for the Google Earth GSD workflow: measure a real-world feature
+    in Google Earth (in feet or meters), then call this to measure the same
+    feature in pixels on your satellite image, then divide.
+    """
+    img = cv2.cvtColor(cv2.imread(str(image_path)), cv2.COLOR_BGR2RGB)
+    fig, ax = plt.subplots(figsize=(16, 12))
+    ax.imshow(img)
+    ax.set_title("Click two endpoints of your reference feature, then close window")
+    pts = plt.ginput(2, timeout=0)
+    plt.close(fig)
+    if len(pts) != 2:
+        raise RuntimeError("Need exactly 2 clicks.")
+    (x1, y1), (x2, y2) = pts
+    return ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+
+
+def compute_gsd(real_world_length, pixel_length):
+    """Compute ground sampling distance from a measured reference.
+
+    Parameters
+    ----------
+    real_world_length : float
+        Distance measured in Google Earth (in feet, meters, etc).
+    pixel_length : float
+        Same distance measured in pixels on the satellite image.
+
+    Returns
+    -------
+    float
+        Ground sampling distance in (real-world units) per pixel. When passed
+        as xy_scale to the plotting functions, X and Y will be in the same
+        units as the height map's Z, giving metrically faithful renders.
+    """
+    if pixel_length <= 0:
+        raise ValueError("pixel_length must be positive.")
+    return real_world_length / pixel_length
 
 
 # Reconstruction
@@ -305,23 +312,42 @@ def plot_2d_diagnostics(height_map=None,
 def plot_point_cloud(points,
                      colors=None,
                      color_by_height=True,
-                     z_exaggeration=300,
+                     z_exaggeration=None,
+                     xy_scale=None,
                      point_size=8,
                      alpha=0.95,
                      title="Textured Point Cloud",
                      save_path=None,
                      show=True):
-    """Plot a 3D point cloud."""
+    """Plot a 3D point cloud.
+
+    If xy_scale is provided (ground sampling distance), X and Y are scaled
+    so all three axes share real-world units; Z is left raw. Otherwise the
+    pixel coordinates are kept and Z is exaggerated by an auto-scaling
+    heuristic so the rendered scene has visually sensible proportions.
+    """
     if len(points) == 0:
         print("Point cloud is empty.")
         return
 
+    x = points[:, 0].astype(float)
+    y = points[:, 1].astype(float)
+    z_raw = points[:, 2]
+
+    if xy_scale is not None:
+        x = x * xy_scale
+        y = y * xy_scale
+        z_exaggeration = 1.0
+    elif z_exaggeration is None:
+        x_extent = max(np.ptp(x), 1)
+        y_extent = max(np.ptp(y), 1)
+        z_extent = max(np.ptp(z_raw), 1e-6)
+        z_exaggeration = 0.35 * max(x_extent, y_extent) / z_extent
+
+    z = z_raw * z_exaggeration
+
     fig = plt.figure(figsize=(12, 9))
     ax = fig.add_subplot(111, projection="3d")
-
-    x = points[:, 0]
-    y = points[:, 1]
-    z = points[:, 2] * z_exaggeration
 
     if colors is not None:
         ax.scatter(
@@ -352,7 +378,7 @@ def plot_point_cloud(points,
     ax.invert_yaxis()
     ax.set_xlabel("X")
     ax.set_ylabel("Y")
-    ax.set_zlabel("Z exaggerated")
+    ax.set_zlabel("Z" if xy_scale is not None else "Z exaggerated")
     ax.set_title(title)
 
     plt.tight_layout()
@@ -370,12 +396,19 @@ def plot_textured_surface(height_map,
                           smooth_sigma=0.9,
                           texture_blur=0.35,
                           z_exaggeration=None,
+                          xy_scale=None,
                           title="Textured 3D Surface",
                           elev=38,
                           azim=-55,
                           save_path=None,
                           show=True):
+    """Plot a textured 3D surface from a height map.
 
+    If xy_scale is provided (ground sampling distance), X and Y are scaled
+    so all three axes share real-world units; Z is left raw. Otherwise the
+    pixel coordinates are kept and Z is exaggerated by an auto-scaling
+    heuristic so the rendered scene has visually sensible proportions.
+    """
     hm = prepare_height_map(height_map).astype(float)
     rgb = resize_to_shape(rgb_image, hm.shape, interpolation=cv2.INTER_AREA)
 
@@ -405,6 +438,9 @@ def plot_textured_surface(height_map,
         rgb = ndimage.gaussian_filter(rgb.astype(float), sigma=(texture_blur, texture_blur, 0))
         rgb = np.clip(rgb, 0, 255).astype(np.uint8)
 
+    # Track effective xy_scale so it stays consistent through resizing
+    effective_xy_scale = xy_scale
+
     if upsample and upsample > 1:
         H, W = hm.shape
         hm = cv2.resize(hm, (W * upsample, H * upsample), interpolation=cv2.INTER_CUBIC)
@@ -412,12 +448,16 @@ def plot_textured_surface(height_map,
         if m_full is not None:
             m_full = cv2.resize(m_full.astype(np.uint8), (W * upsample, H * upsample),
                                 interpolation=cv2.INTER_NEAREST).astype(bool)
+        if effective_xy_scale is not None:
+            effective_xy_scale = effective_xy_scale / upsample
 
     if downsample and downsample > 1:
         hm = hm[::downsample, ::downsample]
         rgb = rgb[::downsample, ::downsample]
         if m_full is not None:
             m_full = m_full[::downsample, ::downsample]
+        if effective_xy_scale is not None:
+            effective_xy_scale = effective_xy_scale * downsample
 
     # Erode the mask slightly to drop the one-pixel boundary smear left by smoothing
     if m_full is not None and mask_erode and mask_erode > 0:
@@ -427,7 +467,13 @@ def plot_textured_surface(height_map,
         hm = np.where(m_full, hm, np.nan)
 
     H, W = hm.shape
-    X, Y = np.meshgrid(np.arange(W), np.arange(H))
+
+    # Build coordinate grids — scale by effective GSD if provided for metric output
+    if effective_xy_scale is not None:
+        X, Y = np.meshgrid(np.arange(W) * effective_xy_scale,
+                           np.arange(H) * effective_xy_scale)
+    else:
+        X, Y = np.meshgrid(np.arange(W), np.arange(H))
 
     finite = hm[np.isfinite(hm)]
     if finite.size == 0:
@@ -435,7 +481,13 @@ def plot_textured_surface(height_map,
         return
 
     height_range = max(np.ptp(finite), 1e-6)
-    if z_exaggeration is None:
+
+    # Choose Z scaling
+    if effective_xy_scale is not None:
+        # Metric mode: X/Y already in real units, leave Z raw
+        z_exaggeration = 1.0
+    elif z_exaggeration is None:
+        # Heuristic mode: exaggerate Z to make scene visually balanced
         z_exaggeration = 0.35 * max(W, H) / height_range
 
     Z = hm * z_exaggeration
@@ -448,23 +500,28 @@ def plot_textured_surface(height_map,
     ax.plot_surface(X, Y, Z, facecolors=facecolors,
                     rstride=1, cstride=1, linewidth=0, antialiased=True, shade=False)
 
-    z_span = np.ptp(Z[np.isfinite(Z)])
-    ax.set_box_aspect([W, H, max(z_span, 1)])
+    z_span = np.ptp(Z[np.isfinite(Z)]) if np.isfinite(Z).any() else 1.0
+    ax.set_box_aspect([
+        max(np.ptp(X), 1),
+        max(np.ptp(Y), 1),
+        max(z_span, 1),
+    ])
     ax.invert_yaxis()
     ax.view_init(elev=elev, azim=azim)
-    ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.set_zlabel("Z" if effective_xy_scale is not None else "Z exaggerated")
     ax.set_title(title)
     plt.tight_layout()
     save_figure(fig, save_path=save_path, show=show)
 
 
 def run_reconstruction_pipeline(
-    name="louvre",
-    depth_path="inputs/louvreCroppedSatellite_depth_norm.npy",
-    rgb_path="inputs/louvreCroppedSatellite.png",
-    mask_path="inputs/mask_louvreCroppedSatellite.npy",
+    name,
+    height_path,
+    rgb_path,
+    mask_path,
     output_dir="outputs",
-    depth_convention="closer_higher",
     min_height=-1e-6,
     min_size=30,
     mask_threshold=0.5,
@@ -472,20 +529,25 @@ def run_reconstruction_pipeline(
     smooth_method="gaussian",
     sigma=1.0,
     sample_step=1,
-    z_exaggeration=140,
+    z_exaggeration=None,
+    xy_scale=None,
     show=False,
     make_plots=True,
 ):
     """Run the full terrain + masked-terrain reconstruction pipeline.
 
-    This function is meant to replace the old script-only main block so the
-    pipeline can be imported and called from a Jupyter notebook.
+    Parameters
+    ----------
+    xy_scale : float or None
+        Ground sampling distance (real-world units per pixel). If provided,
+        plots are rendered metrically — X, Y, and Z all share the same units.
+        If None, plots fall back to a percentile-based auto-scale heuristic.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    raw_depth = np.load(depth_path)
-    height_map = normalize_depth_input(raw_depth, convention=depth_convention)
+    height_map = np.load(height_path)
+    height_map = prepare_height_map(height_map)
     rgb = load_rgb_image(rgb_path, target_shape=height_map.shape)
 
     if mask_path is not None:
@@ -543,7 +605,7 @@ def run_reconstruction_pipeline(
         # Full textured surface
         full_surface_path = output_dir / f"{name}_full_textured_surface.png"
         plot_textured_surface(
-            height_map=results_full["object_height_map"],
+            height_map=height_map,
             rgb_image=rgb,
             mask=None,
             downsample=4,
@@ -551,6 +613,7 @@ def run_reconstruction_pipeline(
             smooth_sigma=0.9,
             texture_blur=0.35,
             z_exaggeration=z_exaggeration,
+            xy_scale=xy_scale,
             title=f"{name} - Full Textured Surface",
             elev=38,
             azim=-55,
@@ -559,28 +622,40 @@ def run_reconstruction_pipeline(
         )
         output_paths["full_textured_surface"] = full_surface_path
 
-        # Mask-focused textured surface
+        # Mask-focused textured surface — full scene texture, masked geometry
         if results_mask_focus is not None:
-            mask_surface_path = output_dir / f"{name}_mask_textured_surface.png"
+            mask_scene_path = output_dir / f"{name}_mask_scene_textured_surface.png"
+
+            pre_smoothed = ndimage.gaussian_filter(height_map, sigma=0.9)
+            m = results_mask_focus["binary_mask"]
+
+            ring = binary_dilation(m, iterations=3) & ~m
+            if ring.any():
+                base = float(np.median(pre_smoothed[ring]))
+            else:
+                base = float(pre_smoothed[m].min()) if m.any() else 0.0
+
+            masked_height = np.where(m, pre_smoothed, base)
+
             plot_textured_surface(
-                height_map=height_map,
+                height_map=masked_height,
                 rgb_image=rgb,
-                mask=results_mask_focus["binary_mask"],
-                crop_to_mask=True,        
-                crop_padding=30,          
-                mask_erode=2,         
-                downsample=2,
+                mask=None,
+                crop_to_mask=False,
+                mask_erode=0,
+                downsample=4,
                 upsample=2,
-                smooth_sigma=0.9,
+                smooth_sigma=0,
                 texture_blur=0.35,
-                z_exaggeration=z_exaggeration,
-                title=f"{name} - Mask-Focused Textured Surface",
+                z_exaggeration=None,
+                xy_scale=xy_scale,
+                title=f"{name} - Mask-Focused Geometry on Full Scene",
                 elev=38,
                 azim=-55,
-                save_path=str(mask_surface_path),
+                save_path=str(mask_scene_path),
                 show=show,
             )
-            output_paths["mask_textured_surface"] = mask_surface_path
+            output_paths["mask_scene_textured_surface"] = mask_scene_path
 
         # Full textured point cloud
         point_cloud_path = output_dir / f"{name}_full_point_cloud.png"
@@ -588,6 +663,7 @@ def run_reconstruction_pipeline(
             results_full["point_cloud"],
             colors=results_full.get("point_cloud_colors"),
             z_exaggeration=z_exaggeration,
+            xy_scale=xy_scale,
             point_size=3,
             alpha=0.95,
             title=f"{name} - Full Textured Point Cloud",
@@ -604,9 +680,8 @@ def run_reconstruction_pipeline(
     print("Full point cloud size:", len(results_full["point_cloud"]))
     if results_mask_focus is not None:
         print("Masked point cloud size:", len(results_mask_focus["point_cloud"]))
-    print("Full has point cloud colors:", "point_cloud_colors" in results_full)
-    if results_mask_focus is not None:
-        print("Masked has point cloud colors:", "point_cloud_colors" in results_mask_focus)
+    if xy_scale is not None:
+        print(f"Metric mode: GSD = {xy_scale:.3f} units/pixel")
     print("Saved outputs to:", output_dir)
 
     return {
@@ -621,11 +696,18 @@ def run_reconstruction_pipeline(
 
 
 if __name__ == "__main__":
+    # After clicking the two endpoints of your reference feature, the script prints the pixel
+    # length; combine it with your Google Earth distance to get GSD.
+    pixel_length = measure_pixel_length("inputs/eastMittenButteSatellite.png")
+    print(f"Pixel length: {pixel_length:.1f}")
+    gsd = compute_gsd(real_world_length=370, pixel_length=pixel_length) # ft or m depending on height_map
+    print(f"GSD: {gsd:.3f} ft/pixel")
+
     run_reconstruction_pipeline(
-        name="mtRushmore",
-        depth_path="inputs/mtRushmore_depth_norm.npy",
-        rgb_path="inputs/rgb_rushmore.png",
-        mask_path="inputs/mask_rgb_rushmore.npy",
+        name="EastMittenButte",
+        height_path="inputs/eastMittenButteSatellite_height_map.npy",
+        rgb_path="inputs/eastMittenButteSatellite.png",
+        mask_path="inputs/mask_rgb_eastMittenButteSatellite.npy",
         output_dir="outputs",
         min_size=30,
         mask_threshold=0.5,
@@ -633,7 +715,8 @@ if __name__ == "__main__":
         smooth_method="gaussian",
         sigma=1.0,
         sample_step=1,
-        z_exaggeration=220,
+        z_exaggeration=None,
+        xy_scale=gsd,         # set to None for auto-scale heuristic
         make_plots=True,
-        show=False
+        show=False,
     )
