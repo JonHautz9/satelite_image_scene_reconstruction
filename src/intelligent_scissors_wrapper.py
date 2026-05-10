@@ -93,7 +93,12 @@ def generate_segment_mask(input_image_path, input_image_fn):
     plt.show()
 
 def main():
-    parser = argparse.ArgumentParser(description="Create segments of an image to generate a mask of.")
+    parser = argparse.ArgumentParser(description="Create segments of an image to generate a mask of.\n" \
+    "Controls:\n" \
+    "* Left Mouse Button: Create a point for a segment path\n" \
+    "* Right Mouse Button: Complete a segment path by returning to the first point in the path\n" \
+    "* Enter Key: Complete a segment path if not complete and close gui window\n", 
+    formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("image_path", help="The path to the image file")
     parser.add_argument("--alpha", action="store_true", help="Include this flag to save the output")
     args = parser.parse_args()

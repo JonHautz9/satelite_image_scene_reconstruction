@@ -398,7 +398,7 @@ def plot_textured_surface(height_map,
                           z_exaggeration=None,
                           xy_scale=None,
                           title="Textured 3D Surface",
-                          elev=38,
+                          elev=10,
                           azim=-55,
                           save_path=None,
                           show=True):
@@ -615,7 +615,7 @@ def run_reconstruction_pipeline(
             z_exaggeration=z_exaggeration,
             xy_scale=xy_scale,
             title=f"{name} - Full Textured Surface",
-            elev=38,
+            elev=10,
             azim=-55,
             save_path=str(full_surface_path),
             show=show,
@@ -650,7 +650,7 @@ def run_reconstruction_pipeline(
                 z_exaggeration=None,
                 xy_scale=xy_scale,
                 title=f"{name} - Mask-Focused Geometry on Full Scene",
-                elev=38,
+                elev=10,
                 azim=-55,
                 save_path=str(mask_scene_path),
                 show=show,
@@ -696,18 +696,16 @@ def run_reconstruction_pipeline(
 
 
 if __name__ == "__main__":
-    # After clicking the two endpoints of your reference feature, the script prints the pixel
-    # length; combine it with your Google Earth distance to get GSD.
-    pixel_length = measure_pixel_length("inputs/eastMittenButteSatellite.png")
+    pixel_length = measure_pixel_length("src/input_images/GizaZoomedSatellite.png")
     print(f"Pixel length: {pixel_length:.1f}")
-    gsd = compute_gsd(real_world_length=370, pixel_length=pixel_length) # ft or m depending on height_map
+    gsd = compute_gsd(real_world_length=138.5, pixel_length=pixel_length) # ft or m depending on height_map
     print(f"GSD: {gsd:.3f} ft/pixel")
 
     run_reconstruction_pipeline(
-        name="EastMittenButte",
-        height_path="inputs/eastMittenButteSatellite_height_map.npy",
-        rgb_path="inputs/eastMittenButteSatellite.png",
-        mask_path="inputs/mask_rgb_eastMittenButteSatellite.npy",
+        name="The Great Pyramid of Giza",
+        height_path="src/heatmap/output/GizaZoomedSatellite_height_map.npy",
+        rgb_path="src/input_images/rgb_GizaZoomedSatellite.png",
+        mask_path="src/masks/mask_rgb_GizaZoomedSatellite.npy",
         output_dir="outputs",
         min_size=30,
         mask_threshold=0.5,
